@@ -55,6 +55,19 @@ if(JSON-C_FOUND)
     SET(JSON-C_LIBRARIES "${JSON-C_LIBRARY}")
 endif()
 
+if(MSVC)
+    # Imported targets select the matching Debug/Release archive and carry the
+    # Windows system libraries required by static dependencies.
+    find_package(libuv CONFIG REQUIRED)
+    if(TARGET libuv::uv_a)
+        set(LIBUV_LIBRARIES libuv::uv_a)
+    else()
+        set(LIBUV_LIBRARIES libuv::uv)
+    endif()
+    find_package(json-c CONFIG REQUIRED)
+    set(JSON-C_LIBRARIES json-c::json-c)
+endif()
+
 find_package(ZLIB REQUIRED)
 find_package(Libwebsockets 3.2.0 REQUIRED)
 

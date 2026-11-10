@@ -1,38 +1,199 @@
-name: release
+name: ttyd binaries and release
 
 on:
+  workflow_dispatch:
   push:
-    tags: ["*"]
+    branches: [main, 'release/**']
+    tags: ['[0-9]*.[0-9]*.[0-9]*']
+    paths:
+      - '.github/workflows/release.yml'
+      - 'scripts/release/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'src/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ttyd-release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  build:
-    uses: ./.github/workflows/backend.yml
-  publish:
-    needs: [build]
+  linux:
+    name: Linux ${{ matrix.arch }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v6
-      - name: Check version bump
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install build tools
         run: |
-          TAG=$(git describe --tags --match "[0-9]*.[0-9]*.[0-9]*" --abbrev=8)
-          VERSION=$(grep project CMakeLists.txt| awk '{print $3}')
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "=== Version in CMakeLists.txt and git tag does not match!"
-            echo "=== Git Tag: $TAG, Version: $VERSION"
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake build-essential cmake curl file libtool python3 qemu-user
+      - name: Build static binary
+        env:
+          BUILD_TARGET: ${{ matrix.arch }}
+          CROSS_ROOT: ${{ runner.temp }}/ttyd-cross
+          STAGE_ROOT: ${{ runner.temp }}/ttyd-stage
+          BUILD_ROOT: ${{ runner.temp }}/ttyd-dependencies
+        run: |
+          source scripts/release/dependencies.env
+          ./scripts/cross-build.sh
+          mkdir -p dist
+          install -m 755 build/ttyd "dist/ttyd.linux-$BUILD_TARGET"
+      - name: Verify binary and authentication
+        env:
+          TTYD_ARCH: ${{ matrix.arch }}
+        run: |
+          binary="dist/ttyd.linux-$TTYD_ARCH"
+          file "$binary"
+          if readelf -d "$binary" | grep -q '(NEEDED)'; then
+            echo 'Unexpected dynamic dependency in Linux binary' >&2
             exit 1
           fi
-      - uses: actions/download-artifact@v8
-        
-      - run: |
-          mkdir build
-          for file in ttyd.*/*; do
-            target=$(echo $file | awk -F/ '{print $1}')
-            [[ $file == *.exe ]] && target="$target.exe"
-            mv $file build/$target
-          done
-          pushd build; sha256sum ttyd.* > SHA256SUMS; popd
-      - uses: ncipollo/release-action@v1
+          if [ "$TTYD_ARCH" = x86_64 ]; then
+            "$binary" --version
+            python3 scripts/release/test-auth.py "$binary"
+          else
+            qemu-aarch64 "$binary" --version
+          fi
+      - uses: actions/upload-artifact@v7
         with:
-          artifacts: build/*
-          allowUpdates: true
-          draft: true
+          name: ttyd.linux-${{ matrix.arch }}
+          path: dist/ttyd.linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+  macos:
+    name: macOS ARM64
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build binary with static third-party libraries
+        run: bash scripts/release/build-macos.sh
+      - name: Test real HTTP, WebSocket and PTY authentication
+        run: python3 scripts/release/test-auth.py dist/ttyd.macos-arm64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ttyd.macos-arm64
+          path: |
+            dist/ttyd.macos-arm64
+            dist/THIRD_PARTY_LICENSES.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      VCPKG_DISABLE_METRICS: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout pinned vcpkg
+        uses: actions/checkout@v6
+        with:
+          repository: microsoft/vcpkg
+          ref: e529425f2f43d773d0a59517c8d89367d68bb7fd
+          path: .build-vcpkg
+          persist-credentials: false
+      - name: Configure dependency cache
+        shell: pwsh
+        run: Add-Content $env:GITHUB_ENV "VCPKG_DEFAULT_BINARY_CACHE=$env:RUNNER_TEMP/ttyd-vcpkg-cache"
+      - name: Restore dependency binaries
+        id: windows-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-windows2022-x64-static-${{ hashFiles('scripts/release/vcpkg.json') }}
+      - name: Build standalone Windows executable
+        shell: pwsh
+        run: ./scripts/release/build-windows.ps1 -VcpkgRoot "$env:GITHUB_WORKSPACE/.build-vcpkg"
+      - name: Test native Windows HTTP, WebSocket and ConPTY
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $pythonExe = (Get-Command python -CommandType Application | Select-Object -First 1).Source
+          $cleanDir = Join-Path $env:RUNNER_TEMP 'ttyd-standalone'
+          New-Item -ItemType Directory -Force $cleanDir | Out-Null
+          $cleanExe = Join-Path $cleanDir 'ttyd.exe'
+          Copy-Item dist/ttyd.windows-x86_64.exe $cleanExe
+          $env:PATH = "$env:WINDIR/System32;$env:WINDIR"
+          & $pythonExe -u scripts/release/test-auth.py $cleanExe
+      - name: Cache dependency binaries
+        if: always() && steps.windows-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-windows2022-x64-static-${{ hashFiles('scripts/release/vcpkg.json') }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ttyd.windows-x86_64
+          path: |
+            dist/ttyd.windows-x86_64.exe
+            dist/THIRD_PARTY_LICENSES_WINDOWS.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/release/validate-tag.py "$RELEASE_TAG"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ttyd.*
+          merge-multiple: true
+          path: dist
+      - name: Check release assets and generate SHA256SUMS
+        run: |
+          test -s dist/ttyd.linux-x86_64
+          test -s dist/ttyd.linux-aarch64
+          test -s dist/ttyd.macos-arm64
+          test -s dist/ttyd.windows-x86_64.exe
+          test -s dist/THIRD_PARTY_LICENSES.tar.gz
+          test -s dist/THIRD_PARTY_LICENSES_WINDOWS.zip
+          cd dist
+          sha256sum ttyd.* THIRD_PARTY_LICENSES* > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Publish tested binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/release/release-notes.py "$RELEASE_TAG" > release-notes.md
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* --verify-tag --draft \
+              --title "ttyd $RELEASE_TAG" --notes-file release-notes.md
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest \
+            --title "ttyd $RELEASE_TAG" --notes-file release-notes.md

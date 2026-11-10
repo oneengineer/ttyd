@@ -36,6 +36,7 @@
 *.su
 __pycache__/
 *.pyc
+/dist/
 
 # Cmake files
 CMakeCache.txt

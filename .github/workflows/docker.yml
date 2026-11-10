@@ -7,6 +7,8 @@ on:
 
 jobs:
   build:
+    # Upstream Docker Hub names and credentials are not used by fork releases.
+    if: github.repository == 'tsl0922/ttyd'
     runs-on: ubuntu-24.04
     permissions:
       packages: write
