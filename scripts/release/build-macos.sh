@@ -105,11 +105,14 @@ codesign --verify --strict "$repo/dist/ttyd.macos-arm64"
 cp "$repo/LICENSE" "$licenses/ttyd-LICENSE"
 for name in zlib json-c libuv openssl libwebsockets; do
   mkdir -p "$licenses/$name"
-  for notice in LICENSE* COPYING* NOTICE*; do
-    if [ -f "$sources/$name/$notice" ]; then
-      cp "$sources/$name/$notice" "$licenses/$name/$notice"
+  notice_found=0
+  for notice in "$sources/$name"/LICENSE* "$sources/$name"/COPYING* "$sources/$name"/NOTICE*; do
+    if [ -f "$notice" ]; then
+      cp "$notice" "$licenses/$name/"
+      notice_found=1
     fi
   done
+  [ "$notice_found" = 1 ] || { echo "Missing license notice: $name" >&2; exit 1; }
 done
 cp "$repo/scripts/release/dependencies.env" "$licenses/dependencies.env"
 COPYFILE_DISABLE=1 tar -czf "$repo/dist/THIRD_PARTY_LICENSES.tar.gz" -C "$licenses" .
