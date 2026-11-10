@@ -4,25 +4,60 @@ on:
   workflow_dispatch:
   push:
     branches: [main, 'release/**']
-    tags: ['[0-9]*.[0-9]*.[0-9]*']
+    tags: ['[0-9]*.[0-9]*.[0-9]*', 'image-v[0-9]*.[0-9]*.[0-9]*']
     paths:
       - '.github/workflows/release.yml'
       - 'scripts/release/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - 'src/**'
+      - 'html/**'
+      - 'tests/**'
 
 permissions:
   contents: read
+
+env:
+  PYTHONUTF8: '1'
 
 concurrency:
   group: ttyd-release-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  frontend:
+    name: Validate tag and embed frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Validate release version before building
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/release/validate-tag.py "$RELEASE_TAG"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Build embedded frontend from this commit
+        working-directory: html
+        run: |
+          corepack enable
+          corepack prepare yarn@3.6.3 --activate
+          yarn install --immutable
+          yarn build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: embedded-web-frontend
+          path: src/html.h
+          if-no-files-found: error
+
   linux:
     name: Linux ${{ matrix.arch }}
     runs-on: ubuntu-24.04
+    needs: frontend
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -36,7 +71,11 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake build-essential cmake curl file libtool python3 qemu-user
+          sudo apt-get install -y autoconf automake build-essential cmake curl file libtool python3
+      - uses: actions/download-artifact@v8
+        with:
+          name: embedded-web-frontend
+          path: src
       - name: Build static binary
         env:
           BUILD_TARGET: ${{ matrix.arch }}
@@ -61,18 +100,60 @@ jobs:
           if [ "$TTYD_ARCH" = x86_64 ]; then
             "$binary" --version
             python3 scripts/release/test-auth.py "$binary"
-          else
-            qemu-aarch64 "$binary" --version
           fi
+      - uses: actions/setup-node@v6
+        if: matrix.arch == 'x86_64'
+        with:
+          node-version: '22'
+      - name: Test image protocol and real browser clipboard
+        if: matrix.arch == 'x86_64'
+        run: |
+          npm ci --prefix tests/browser
+          cd tests/browser
+          npx playwright install --with-deps chromium
+          cd ../..
+          python3 tests/test_image_upload.py dist/ttyd.linux-x86_64
+          python3 scripts/release/test-browser.py dist/ttyd.linux-x86_64
       - uses: actions/upload-artifact@v7
         with:
           name: ttyd.linux-${{ matrix.arch }}
           path: dist/ttyd.linux-${{ matrix.arch }}
           if-no-files-found: error
 
+  linux-arm64-test:
+    name: Native Linux ARM64 tests
+    needs: linux
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: ttyd.linux-aarch64
+          path: dist
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          architecture: arm64
+      - name: Test native ARM64 HTTP, PTY, images and browser
+        run: |
+          test "$(uname -m)" = aarch64
+          chmod +x dist/ttyd.linux-aarch64
+          dist/ttyd.linux-aarch64 --version
+          npm ci --prefix tests/browser
+          cd tests/browser
+          npx playwright install --with-deps chromium
+          cd ../..
+          python3 scripts/release/test-auth.py dist/ttyd.linux-aarch64
+          python3 tests/test_image_upload.py dist/ttyd.linux-aarch64
+          python3 scripts/release/test-browser.py dist/ttyd.linux-aarch64
+
   macos:
     name: macOS ARM64
     runs-on: macos-15
+    needs: frontend
     timeout-minutes: 45
     env:
       MACOSX_DEPLOYMENT_TARGET: '15.0'
@@ -81,10 +162,26 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: embedded-web-frontend
+          path: src
       - name: Build binary with static third-party libraries
         run: bash scripts/release/build-macos.sh
       - name: Test real HTTP, WebSocket and PTY authentication
         run: python3 scripts/release/test-auth.py dist/ttyd.macos-arm64
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          architecture: arm64
+      - name: Test image protocol and real browser clipboard
+        run: |
+          npm ci --prefix tests/browser
+          cd tests/browser
+          npx playwright install chromium
+          cd ../..
+          python3 tests/test_image_upload.py dist/ttyd.macos-arm64
+          python3 scripts/release/test-browser.py dist/ttyd.macos-arm64
       - uses: actions/upload-artifact@v7
         with:
           name: ttyd.macos-arm64
@@ -96,6 +193,7 @@ jobs:
   windows:
     name: Windows x64
     runs-on: windows-2022
+    needs: frontend
     timeout-minutes: 60
     env:
       VCPKG_DISABLE_METRICS: '1'
@@ -104,6 +202,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: embedded-web-frontend
+          path: src
       - name: Checkout pinned vcpkg
         uses: actions/checkout@v6
         with:
@@ -135,6 +237,21 @@ jobs:
           Copy-Item dist/ttyd.windows-x86_64.exe $cleanExe
           $env:PATH = "$env:WINDIR/System32;$env:WINDIR"
           & $pythonExe -u scripts/release/test-auth.py $cleanExe
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          architecture: x64
+      - name: Test native Windows images and real browser clipboard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm ci --prefix tests/browser
+          Push-Location tests/browser
+          try { npx playwright install chromium } finally { Pop-Location }
+          $cleanExe = Join-Path $env:RUNNER_TEMP 'ttyd-standalone/ttyd.exe'
+          python -u tests/test_image_upload.py $cleanExe
+          python -u scripts/release/test-browser.py $cleanExe
       - name: Cache dependency binaries
         if: always() && steps.windows-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
@@ -152,7 +269,7 @@ jobs:
   publish:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, macos, windows]
+    needs: [linux, linux-arm64-test, macos, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

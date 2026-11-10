@@ -11,6 +11,21 @@ Includes the first-message WebSocket token authentication fix for browsers that
 omit HTTP Authorization during the WebSocket handshake. HTTP authentication and
 token verification remain required before a terminal process starts.
 
+Browser clipboard images can be uploaded with `-W --image-upload`; the browser
+pastes the saved server path without submitting it. Claude/Codex attachment
+detection depends on the CLI version. Use the default upload directory: some
+Codex versions do not detect custom POSIX paths containing spaces. Native image
+attachments have been verified with Claude/Codex on macOS; the release tests
+exercise ttyd's browser/PTY/file behavior without contacting either AI service.
+Completed uploads expire after 24
+hours and are pruned on a later upload; there is no model-completion detector.
+Mobile/tablet default fonts are two points smaller, with explicit font options
+still taking precedence. Text/OSC 52 clipboard integration is retained.
+
+Fixes image and long-text paste disconnects caused by libwebsockets' optional
+WebSocket compression. HTTP gzip and HTTPS are unaffected. Native browser
+clipboard, multi-chunk PNG, PTY and authentication tests gate all four targets.
+
 | Download | System |
 | --- | --- |
 | `ttyd.linux-x86_64` | Ubuntu / Linux, Intel or AMD 64-bit |

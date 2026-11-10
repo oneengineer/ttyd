@@ -32,14 +32,6 @@ static const struct lws_protocols protocols[] = {{"http-only", callback_http, si
                                                  {"tty", callback_tty, sizeof(struct pss_tty), 0},
                                                  {NULL, NULL, 0, 0}};
 
-#ifndef LWS_WITHOUT_EXTENSIONS
-// websocket extensions
-static const struct lws_extension extensions[] = {
-    {"permessage-deflate", lws_extension_callback_pm_deflate, "permessage-deflate"},
-    {"deflate-frame", lws_extension_callback_pm_deflate, "deflate_frame"},
-    {NULL, NULL, NULL}};
-#endif
-
 #if LWS_LIBRARY_VERSION_NUMBER >= 4000000
 static const uint32_t backoff_ms[] = {1000, 2000, 3000, 4000, 5000};
 static lws_retry_bo_t retry = {
@@ -331,9 +323,10 @@ int main(int argc, char **argv) {
   info.uid = -1;
   info.max_http_header_pool = 16;
   info.options = LWS_SERVER_OPTION_LIBUV | LWS_SERVER_OPTION_VALIDATE_UTF8 | LWS_SERVER_OPTION_DISABLE_IPV6;
-#ifndef LWS_WITHOUT_EXTENSIONS
-  info.extensions = extensions;
-#endif
+  // Leave optional WebSocket compression disabled. libwebsockets 4.4/4.5
+  // can abort compressed browser input with "rx buffer underflow" when a
+  // paste or image chunk exceeds its inflate buffer (ttyd upstream #1532).
+  // This does not affect HTTP gzip or TLS, and avoids arbitrary paste limits.
   info.max_http_header_data = 65535;
 
   int debug_level = LLL_ERR | LLL_WARN | LLL_NOTICE;

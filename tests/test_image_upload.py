@@ -25,7 +25,22 @@ TRACE = ROOT / 'pty-input'
 TRACE.touch()
 FIXTURE = ROOT / 'client.py'
 FIXTURE.write_text('''import os,sys
-if os.name != 'nt':
+if os.name == 'nt':
+ import ctypes,msvcrt
+ from ctypes import wintypes
+ kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+ kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+ kernel.GetStdHandle.restype = wintypes.HANDLE
+ kernel.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+ msvcrt.setmode(0, os.O_BINARY)
+ msvcrt.setmode(1, os.O_BINARY)
+ kernel.SetConsoleCP(65001)
+ kernel.SetConsoleOutputCP(65001)
+ if not kernel.SetConsoleMode(kernel.GetStdHandle(-10), 0x0200):
+  raise ctypes.WinError(ctypes.get_last_error())
+ if not kernel.SetConsoleMode(kernel.GetStdHandle(-11), 0x0005):
+  raise ctypes.WinError(ctypes.get_last_error())
+else:
  import tty
  tty.setraw(0)
 os.write(1,b'IMAGE-PTY-READY\\r\\n')
@@ -49,7 +64,7 @@ def start(*extra):
     proc = subprocess.Popen([str(BINARY), '-i', '127.0.0.1', '-p', str(port), '-s', '15',
                              '-c', 'local-image-test:local-only-password', '--image-upload-dir', str(IMAGES),
                              *extra, sys.executable, str(FIXTURE), str(TRACE)],
-                            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=os.name != 'nt')
     SERVERS.append((proc, log))
     def ready():
         try:
@@ -105,14 +120,21 @@ try:
     fresh.mkdir(mode=0o700)
     (fresh / 'image.png').write_bytes(PNG)
     link = IMAGES / 'ttyd-image-link12'
-    link.symlink_to(fresh, target_is_directory=True)
+    try:
+        link.symlink_to(fresh, target_is_directory=True)
+    except OSError:
+        # Unprivileged Windows runners need Developer Mode to create symlinks.
+        if os.name != 'nt':
+            raise
     port = start('-W', '--image-upload')
     ws, prefs = connect(port)
     assert prefs['imageUpload'] is True and prefs['imageUploadMaxBytes'] == 20 * 1024 * 1024
     one = upload(ws, PNG)
     assert one.is_absolute() and one.read_bytes() == PNG
     assert one.parent.parent == IMAGES.resolve()
-    assert not expired.exists() and fresh.exists() and link.is_symlink()
+    assert not expired.exists() and fresh.exists()
+    if link.exists():
+        assert link.is_symlink()
     if os.name != 'nt':
         assert stat.S_IMODE(one.stat().st_mode) == 0o600
         assert stat.S_IMODE(one.parent.stat().st_mode) == 0o700
