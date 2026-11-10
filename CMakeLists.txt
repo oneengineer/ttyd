@@ -4,7 +4,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 project(ttyd VERSION 1.7.7 LANGUAGES C)
 
-set(TTYD_VERSION "${PROJECT_VERSION}")
+set(TTYD_VERSION "${PROJECT_VERSION}-herdr-auth1")
 
 include(GetGitVersion)
 get_git_version(GIT_VERSION SEM_VER)

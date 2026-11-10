@@ -41,8 +41,10 @@ static json_object *parse_window_size(const char *buf, size_t len, uint16_t *col
   json_object *obj = json_tokener_parse_ex(tok, buf, len);
   struct json_object *o = NULL;
 
-  if (json_object_object_get_ex(obj, "columns", &o)) *cols = (uint16_t)json_object_get_int(o);
-  if (json_object_object_get_ex(obj, "rows", &o)) *rows = (uint16_t)json_object_get_int(o);
+  if (obj != NULL && json_object_is_type(obj, json_type_object)) {
+    if (json_object_object_get_ex(obj, "columns", &o)) *cols = (uint16_t)json_object_get_int(o);
+    if (json_object_object_get_ex(obj, "rows", &o)) *rows = (uint16_t)json_object_get_int(o);
+  }
 
   json_tokener_free(tok);
   return obj;
@@ -191,7 +193,11 @@ static bool check_auth(struct lws *wsi, struct pss_tty *pss) {
 
   if (server->credential != NULL) {
     char buf[256];
-    size_t n = lws_hdr_copy(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_AUTHORIZATION);
+    int n = lws_hdr_copy(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_AUTHORIZATION);
+    // Some WebKit clients do not reuse HTTP Basic credentials for WebSockets.
+    // An absent header may proceed to the mandatory first-message AuthToken check.
+    // Present but incorrect (or oversized) headers are still rejected here.
+    if (n == 0) return true;
     return n >= 7 && strstr(buf, "Basic ") && !strcmp(buf + 6, server->credential);
   }
 
@@ -237,6 +243,7 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       pss->authenticated = false;
       pss->wsi = wsi;
       pss->lws_close_status = LWS_CLOSE_STATUS_NOSTATUS;
+      if (server->credential != NULL) lws_set_timer_usecs(wsi, 10 * LWS_USEC_PER_SEC);
 
       if (server->url_arg) {
         while (lws_hdr_copy_fragment(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_URI_ARGS, n++) > 0) {
@@ -255,6 +262,8 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       break;
 
     case LWS_CALLBACK_SERVER_WRITEABLE:
+      // Do not disclose title/preferences or terminal output before authentication.
+      if (server->credential != NULL && !pss->authenticated) break;
       if (!pss->initialized) {
         if (pss->initial_cmd_index == sizeof(initial_cmds)) {
           pss->initialized = true;
@@ -295,6 +304,7 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
         pss->len += len;
       }
 
+      if (pss->len == 0) return -1;
       const char command = pss->buffer[0];
 
       // check auth
@@ -334,6 +344,11 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
           uint16_t columns = 0;
           uint16_t rows = 0;
           json_object *obj = parse_window_size(pss->buffer, pss->len, &columns, &rows);
+          if (obj == NULL || !json_object_is_type(obj, json_type_object)) {
+            if (obj != NULL) json_object_put(obj);
+            lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, NULL, 0);
+            return -1;
+          }
           if (server->credential != NULL) {
             struct json_object *o = NULL;
             if (json_object_object_get_ex(obj, "AuthToken", &o)) {
@@ -341,7 +356,7 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
               if (token != NULL && !strcmp(token, server->credential))
                 pss->authenticated = true;
               else
-                lwsl_warn("WS authentication failed with token: %s\n", token);
+                lwsl_warn("WS authentication failed\n");
             }
             if (!pss->authenticated) {
               json_object_put(obj);
@@ -349,6 +364,7 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
               return -1;
             }
           }
+          lws_set_timer_usecs(wsi, LWS_SET_TIMER_USEC_CANCEL);
           json_object_put(obj);
           if (!spawn_process(pss, columns, rows)) return 1;
           break;
@@ -360,6 +376,14 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       if (pss->buffer != NULL) {
         free(pss->buffer);
         pss->buffer = NULL;
+      }
+      break;
+
+    case LWS_CALLBACK_TIMER:
+      if (server->credential != NULL && !pss->authenticated) {
+        lwsl_warn("WS authentication timed out\n");
+        lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, NULL, 0);
+        return -1;
       }
       break;
 

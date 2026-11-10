@@ -87,6 +87,9 @@ OPTIONS:
 
 Read the example usage on the [wiki](https://github.com/tsl0922/ttyd/wiki/Example-Usage).
 
+For the Herdr/Cloudflare launchers, OSC 52 clipboard integration and WebSocket
+token-authentication fix in this checkout, see [Herdr web terminal](docs/herdr-web.md).
+
 ## Browser Support
 
 Modern browsers, See [Browser Support](https://github.com/xtermjs/xterm.js#browser-support).
