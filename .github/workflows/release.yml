@@ -93,10 +93,66 @@ jobs:
             dist/THIRD_PARTY_LICENSES.tar.gz
           if-no-files-found: error
 
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      VCPKG_DISABLE_METRICS: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout pinned vcpkg
+        uses: actions/checkout@v6
+        with:
+          repository: microsoft/vcpkg
+          ref: e529425f2f43d773d0a59517c8d89367d68bb7fd
+          path: .build-vcpkg
+          persist-credentials: false
+      - name: Configure dependency cache
+        shell: pwsh
+        run: Add-Content $env:GITHUB_ENV "VCPKG_DEFAULT_BINARY_CACHE=$env:RUNNER_TEMP/ttyd-vcpkg-cache"
+      - name: Restore dependency binaries
+        id: windows-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-windows2022-x64-static-${{ hashFiles('scripts/release/vcpkg.json') }}
+      - name: Build standalone Windows executable
+        shell: pwsh
+        run: ./scripts/release/build-windows.ps1 -VcpkgRoot "$env:GITHUB_WORKSPACE/.build-vcpkg"
+      - name: Test native Windows HTTP, WebSocket and ConPTY
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $pythonExe = (Get-Command python -CommandType Application | Select-Object -First 1).Source
+          $cleanDir = Join-Path $env:RUNNER_TEMP 'ttyd-standalone'
+          New-Item -ItemType Directory -Force $cleanDir | Out-Null
+          $cleanExe = Join-Path $cleanDir 'ttyd.exe'
+          Copy-Item dist/ttyd.windows-x86_64.exe $cleanExe
+          $env:PATH = "$env:WINDIR/System32;$env:WINDIR"
+          & $pythonExe -u scripts/release/test-auth.py $cleanExe
+      - name: Cache dependency binaries
+        if: always() && steps.windows-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-windows2022-x64-static-${{ hashFiles('scripts/release/vcpkg.json') }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ttyd.windows-x86_64
+          path: |
+            dist/ttyd.windows-x86_64.exe
+            dist/THIRD_PARTY_LICENSES_WINDOWS.zip
+          if-no-files-found: error
+
   publish:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, macos]
+    needs: [linux, macos, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -119,9 +175,11 @@ jobs:
           test -s dist/ttyd.linux-x86_64
           test -s dist/ttyd.linux-aarch64
           test -s dist/ttyd.macos-arm64
+          test -s dist/ttyd.windows-x86_64.exe
           test -s dist/THIRD_PARTY_LICENSES.tar.gz
+          test -s dist/THIRD_PARTY_LICENSES_WINDOWS.zip
           cd dist
-          sha256sum ttyd.* THIRD_PARTY_LICENSES.tar.gz > SHA256SUMS
+          sha256sum ttyd.* THIRD_PARTY_LICENSES* > SHA256SUMS
           sha256sum --check SHA256SUMS
       - name: Publish tested binaries
         env:

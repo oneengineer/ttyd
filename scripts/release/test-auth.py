@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 BINARY = Path(sys.argv[1]).resolve()
-ROOT = Path(tempfile.mkdtemp(prefix='ttyd-auth-test.'))
+ROOT = Path(tempfile.mkdtemp(prefix='ttyd-auth-test.', dir=os.environ.get('RUNNER_TEMP')))
 TRACE = ROOT / 'clients'
 TRACE.touch()
 FIXTURE = ROOT / 'client.py'
@@ -35,7 +35,8 @@ with socket.socket() as s:
 LOG = (ROOT / 'ttyd.log').open('wb')
 SERVER = subprocess.Popen([str(BINARY), '-i', '127.0.0.1', '-p', str(PORT), '-W', '-s', '15',
                            '-c', CREDENTIAL, sys.executable, str(FIXTURE), str(TRACE)],
-                          stdin=subprocess.DEVNULL, stdout=LOG, stderr=LOG, start_new_session=True)
+                          stdin=subprocess.DEVNULL, stdout=LOG, stderr=LOG,
+                          start_new_session=os.name != 'nt')
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -55,6 +56,22 @@ def clients():
 
 
 def alive(pid):
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            kernel.CloseHandle(handle)
     p = subprocess.run(['ps', '-p', str(pid), '-o', 'stat=,rss=,vsz='], capture_output=True, text=True)
     if not p.stdout.strip():
         return False
@@ -226,7 +243,13 @@ finally:
     LOG.close()
     for pid in clients():
         if alive(pid):
-            args = subprocess.run(['ps', '-p', str(pid), '-o', 'args='], capture_output=True, text=True).stdout
+            if os.name == 'nt':
+                powershell = str(Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+                args = subprocess.run([powershell, '-NoProfile', '-Command',
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"],
+                    capture_output=True, text=True).stdout
+            else:
+                args = subprocess.run(['ps', '-p', str(pid), '-o', 'args='], capture_output=True, text=True).stdout
             if str(FIXTURE) in args:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, signal.SIGTERM if os.name == 'nt' else signal.SIGKILL)
     print('Auth test logs:', ROOT, flush=True)

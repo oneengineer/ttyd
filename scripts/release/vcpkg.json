@@ -1,0 +1,13 @@
+{
+  "name": "ttyd-release-dependencies",
+  "version-string": "1",
+  "builtin-baseline": "e529425f2f43d773d0a59517c8d89367d68bb7fd",
+  "dependencies": [
+    "getopt-win32",
+    "json-c",
+    "libuv",
+    "libwebsockets",
+    "openssl",
+    "zlib"
+  ]
+}

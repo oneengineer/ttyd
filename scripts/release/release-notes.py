@@ -16,19 +16,25 @@ token verification remain required before a terminal process starts.
 | `ttyd.linux-x86_64` | Ubuntu / Linux, Intel or AMD 64-bit |
 | `ttyd.linux-aarch64` | Ubuntu / Linux, ARM64 |
 | `ttyd.macos-arm64` | Apple Silicon (M1 and newer), macOS 15 or newer |
+| `ttyd.windows-x86_64.exe` | Windows 10 1809 or newer / Windows 11, Intel or AMD 64-bit |
 
 Linux binaries use musl and static third-party libraries. The Mac binary links
 third-party libraries statically and requires only macOS system libraries.
 The web terminal frontend is embedded in each binary.
+The Windows executable statically links third-party libraries and the MSVC
+runtime, and is tested with native Windows ConPTY.
 
 After downloading the correct file, give it execute permission with `chmod +x`
 and run it from your terminal. `SHA256SUMS` contains checksums for every asset;
-`THIRD_PARTY_LICENSES.tar.gz` contains dependency notices and versions.
+`THIRD_PARTY_LICENSES.tar.gz` contains Linux/Mac dependency notices and versions.
+Windows notices and exact vcpkg dependency versions are in
+`THIRD_PARTY_LICENSES_WINDOWS.zip`. Windows users can run the downloaded `.exe`
+directly from PowerShell; `chmod` applies only to Linux and macOS.
 
 These are standalone ttyd binaries; Herdr, Cloudflare Tunnel and launcher scripts
 are not included.
 
-Dependency versions:
+Linux and macOS dependency versions (Windows uses the pinned vcpkg manifest):
 ''')
 for line in (root / 'scripts/release/dependencies.env').read_text().splitlines():
     if line.startswith('export '):
