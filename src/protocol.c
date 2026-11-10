@@ -10,6 +10,7 @@
 #include "server.h"
 #include "utils.h"
 #include "compat.h"
+#include "image-upload.h"
 
 // initial message list
 static char initial_cmds[] = {SET_WINDOW_TITLE, SET_PREFERENCES};
@@ -239,6 +240,7 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       break;
 
     case LWS_CALLBACK_ESTABLISHED:
+      pss->image_fd = -1;
       pss->initialized = false;
       pss->authenticated = false;
       pss->wsi = wsi;
@@ -285,6 +287,20 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
         return 1;
       }
 
+      if (pss->image_reply != NULL) {
+        size_t size = strlen(pss->image_reply);
+        unsigned char *message = xmalloc(LWS_PRE + size + 1);
+        message[LWS_PRE] = IMAGE_UPLOAD_REPLY;
+        memcpy(message + LWS_PRE + 1, pss->image_reply, size);
+        int written = lws_write(wsi, message + LWS_PRE, size + 1, LWS_WRITE_BINARY);
+        free(message);
+        free(pss->image_reply);
+        pss->image_reply = NULL;
+        if (written < 0 || (size_t)written != size + 1) return -1;
+        if (pss->pty_buf != NULL) lws_callback_on_writable(wsi);
+        break;
+      }
+
       if (pss->pty_buf != NULL) {
         wsi_output(wsi, pss->pty_buf);
         pty_buf_free(pss->pty_buf);
@@ -294,6 +310,17 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       break;
 
     case LWS_CALLBACK_RECEIVE:
+      // Uploads are streamed in bounded messages; reject oversized frames before
+      // accumulating them, including WebSocket fragmentation.
+      if ((pss->buffer != NULL || len > 0)) {
+        char type = pss->buffer != NULL ? pss->buffer[0] : ((char *)in)[0];
+        size_t previous = pss->buffer != NULL ? pss->len : 0;
+        if (type >= IMAGE_UPLOAD_BEGIN && type <= IMAGE_UPLOAD_CANCEL &&
+            (len > IMAGE_UPLOAD_CHUNK_BYTES + 1 || previous > IMAGE_UPLOAD_CHUNK_BYTES + 1 - len)) {
+          lws_close_reason(wsi, LWS_CLOSE_STATUS_MESSAGE_TOO_LARGE, NULL, 0);
+          return -1;
+        }
+      }
       if (pss->buffer == NULL) {
         pss->buffer = xmalloc(len);
         pss->len = len;
@@ -319,6 +346,12 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       }
 
       switch (command) {
+        case IMAGE_UPLOAD_BEGIN:
+        case IMAGE_UPLOAD_CHUNK:
+        case IMAGE_UPLOAD_FINISH:
+        case IMAGE_UPLOAD_CANCEL:
+          image_upload_message(pss, command, pss->buffer + 1, pss->len - 1);
+          break;
         case INPUT:
           if (!server->writable) break;
           int err = pty_write(pss->process, pty_buf_init(pss->buffer + 1, pss->len - 1));
@@ -385,10 +418,14 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
         lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, NULL, 0);
         return -1;
       }
+      if (pss->image_fd >= 0) image_upload_timeout(pss);
       break;
 
     case LWS_CALLBACK_CLOSED:
       if (pss->wsi == NULL) break;
+      image_upload_abort(pss);
+      free(pss->image_reply);
+      pss->image_reply = NULL;
 
       server->client_count--;
       lwsl_notice("WS closed from %s, clients: %d\n", pss->address, server->client_count);

@@ -4,7 +4,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 project(ttyd VERSION 1.7.7 LANGUAGES C)
 
-set(TTYD_VERSION "${PROJECT_VERSION}-herdr-auth1")
+set(TTYD_VERSION "${PROJECT_VERSION}-herdr-auth1-image1")
 
 include(GetGitVersion)
 get_git_version(GIT_VERSION SEM_VER)
@@ -33,7 +33,7 @@ else()
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS _GNU_SOURCE)
 endif()
 
-set(SOURCE_FILES src/utils.c src/pty.c src/protocol.c src/http.c src/server.c)
+set(SOURCE_FILES src/utils.c src/pty.c src/protocol.c src/http.c src/server.c src/image-upload.c)
 
 include(FindPackageHandleStandardArgs)
 

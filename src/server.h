@@ -54,6 +54,15 @@ struct pss_tty {
   pty_buf_t *pty_buf;
 
   int lws_close_status;
+
+  int image_fd;
+  char image_id[65];
+  char *image_path;
+  char *image_directory;
+  char *image_reply;
+  size_t image_size;
+  size_t image_received;
+  unsigned char image_header[12];
 };
 
 typedef struct {
@@ -75,6 +84,8 @@ struct server {
   char sig_name[20];       // human readable signal string
   bool url_arg;            // allow client to send cli arguments in URL
   bool writable;           // whether clients to write to the TTY
+  bool image_upload;       // opt-in browser image paste over authenticated WS
+  char *image_upload_dir;  // optional existing base directory for saved images
   bool check_origin;       // whether allow websocket connection from different origin
   int max_clients;         // maximum clients to support
   bool once;               // whether accept only one client and exit on disconnection

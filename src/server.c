@@ -13,6 +13,7 @@
 
 #include "utils.h"
 #include "compat.h"
+#include "image-upload.h"
 
 #ifndef TTYD_VERSION
 #define TTYD_VERSION "unknown"
@@ -74,6 +75,8 @@ static const struct option options[] = {{"port", required_argument, NULL, 'p'},
                                         {"ssl-ca", required_argument, NULL, 'A'},
                                         {"url-arg", no_argument, NULL, 'a'},
                                         {"writable", no_argument, NULL, 'W'},
+                                        {"image-upload", no_argument, NULL, 1000},
+                                        {"image-upload-dir", required_argument, NULL, 1001},
                                         {"terminal-type", required_argument, NULL, 'T'},
                                         {"client-option", required_argument, NULL, 't'},
                                         {"check-origin", no_argument, NULL, 'O'},
@@ -106,6 +109,8 @@ static void print_help() {
           "    -w, --cwd               Working directory to be set for the child program\n"
           "    -a, --url-arg           Allow client to send command line arguments in URL (eg: http://localhost:7681?arg=foo&arg=bar)\n"
           "    -W, --writable          Allow clients to write to the TTY (readonly by default)\n"
+          "        --image-upload      Enable browser image paste (requires -W; max 20 MiB per image)\n"
+          "        --image-upload-dir  Existing directory for uploaded images (default: system temp)\n"
           "    -t, --client-option     Send option to client (format: key=value), repeat to add more options\n"
           "    -T, --terminal-type     Terminal type to report, default: xterm-256color\n"
           "    -O, --check-origin      Do not allow websocket connection from different origin\n"
@@ -210,6 +215,7 @@ static void server_free(struct server *ts) {
   if (ts->auth_header != NULL) free(ts->auth_header);
   if (ts->index != NULL) free(ts->index);
   if (ts->cwd != NULL) free(ts->cwd);
+  free(ts->image_upload_dir);
   free(ts->command);
   free(ts->prefs_json);
 
@@ -349,6 +355,21 @@ int main(int argc, char **argv) {
   int c;
   while ((c = getopt_long(start, argv, opt_string, options, NULL)) != -1) {
     switch (c) {
+      case 1000:
+        server->image_upload = true;
+        break;
+      case 1001: {
+        uv_fs_t req;
+        if (uv_fs_realpath(NULL, &req, optarg, NULL) < 0) {
+          uv_fs_req_cleanup(&req);
+          fprintf(stderr, "ttyd: image upload directory must already exist\n");
+          return -1;
+        }
+        free(server->image_upload_dir);
+        server->image_upload_dir = strdup(req.ptr);
+        uv_fs_req_cleanup(&req);
+        break;
+      }
       case 'h':
         print_help();
         return 0;
@@ -524,6 +545,9 @@ int main(int argc, char **argv) {
         return -1;
     }
   }
+  // These are server capabilities, not client-controlled URL preferences.
+  json_object_object_add(client_prefs, "imageUpload", json_object_new_boolean(server->image_upload && server->writable));
+  json_object_object_add(client_prefs, "imageUploadMaxBytes", json_object_new_int(IMAGE_UPLOAD_MAX_BYTES));
   server->prefs_json = strdup(json_object_to_json_string(client_prefs));
   json_object_put(client_prefs);
 

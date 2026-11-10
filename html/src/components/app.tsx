@@ -20,8 +20,12 @@ const clientOptions = {
     isWindows: false,
     unicodeVersion: '11',
 } as ClientOptions;
+// iPadOS can identify as a Mac when requesting desktop websites.
+const isMobileDevice =
+    /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const termOptions = {
-    fontSize: 13,
+    fontSize: 13 - (isMobileDevice ? 2 : 0),
     fontFamily: 'Consolas,Liberation Mono,Menlo,Courier,monospace',
     theme: {
         foreground: '#d2d2d2',

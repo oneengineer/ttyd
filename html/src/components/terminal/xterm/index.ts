@@ -10,6 +10,7 @@ import { ImageAddon } from '@xterm/addon-image';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { OverlayAddon } from './addons/overlay';
 import { ZmodemAddon } from './addons/zmodem';
+import { ImagePaste } from './addons/image-paste';
 
 import '@xterm/xterm/css/xterm.css';
 
@@ -28,6 +29,7 @@ enum Command {
     OUTPUT = '0',
     SET_WINDOW_TITLE = '1',
     SET_PREFERENCES = '2',
+    IMAGE_UPLOAD_REPLY = '3',
 
     // client side
     INPUT = '0',
@@ -91,6 +93,7 @@ export class Xterm {
     private webglAddon?: WebglAddon;
     private canvasAddon?: CanvasAddon;
     private zmodemAddon?: ZmodemAddon;
+    private imagePaste?: ImagePaste;
 
     private socket?: WebSocket;
     private token: string;
@@ -227,6 +230,16 @@ export class Xterm {
     }
 
     @bind
+    private sendImageData(command: string, data = new Uint8Array()): boolean {
+        if (this.socket?.readyState !== WebSocket.OPEN) return false;
+        const payload = new Uint8Array(data.length + 1);
+        payload[0] = command.charCodeAt(0);
+        payload.set(data, 1);
+        this.socket.send(payload);
+        return true;
+    }
+
+    @bind
     public sendData(data: string | Uint8Array) {
         const { socket, textEncoder } = this;
         if (socket?.readyState !== WebSocket.OPEN) return;
@@ -261,6 +274,11 @@ export class Xterm {
         console.log('[ttyd] websocket connection opened');
 
         const { textEncoder, terminal, overlayAddon } = this;
+        this.imagePaste = this.register(
+            new ImagePaste(terminal, this.sendImageData, (message, timeout) =>
+                overlayAddon.showOverlay(message, timeout)
+            )
+        );
         const msg = JSON.stringify({ AuthToken: this.token, columns: terminal.cols, rows: terminal.rows });
         this.socket?.send(textEncoder.encode(msg));
 
@@ -279,6 +297,7 @@ export class Xterm {
 
     @bind
     private onSocketClose(event: CloseEvent) {
+        this.imagePaste?.disconnect();
         console.log(`[ttyd] websocket connection closed with code: ${event.code}`);
 
         const { refreshToken, connect, doReconnect, overlayAddon } = this;
@@ -354,12 +373,22 @@ export class Xterm {
                 this.title = textDecoder.decode(data);
                 document.title = this.title;
                 break;
-            case Command.SET_PREFERENCES:
+            case Command.SET_PREFERENCES: {
+                const serverPreferences = JSON.parse(textDecoder.decode(data));
+                this.imagePaste?.setCapabilities(
+                    serverPreferences.imageUpload === true,
+                    serverPreferences.imageUploadMaxBytes || 0,
+                    serverPreferences.isWindows === true
+                );
                 this.applyPreferences({
                     ...this.options.clientOptions,
-                    ...JSON.parse(textDecoder.decode(data)),
+                    ...serverPreferences,
                     ...this.parseOptsFromUrlQuery(window.location.search),
                 } as Preferences);
+                break;
+            }
+            case Command.IMAGE_UPLOAD_REPLY:
+                this.imagePaste?.receive(JSON.parse(textDecoder.decode(data)));
                 break;
             default:
                 console.warn(`[ttyd] unknown command: ${cmd}`);
@@ -410,6 +439,9 @@ export class Xterm {
                     break;
                 case 'enableZmodem':
                     if (value) console.log('[ttyd] Zmodem enabled');
+                    break;
+                case 'imageUpload':
+                case 'imageUploadMaxBytes':
                     break;
                 case 'enableTrzsz':
                     if (value) console.log('[ttyd] trzsz enabled');
