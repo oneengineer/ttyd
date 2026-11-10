@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: ttyd-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   linux:
